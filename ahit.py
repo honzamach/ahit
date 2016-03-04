@@ -52,7 +52,7 @@ def extract_facts(facts, config):
                     fact_value = '???'
                     break
             if 'shorten' in cfg and cfg['shorten']:
-                fact_value = fact_shorten(fact_value)
+                fact_value = fact_replace(fact_value)
             if 'trim' in cfg:
                 fact_value = fact_value[:cfg['trim']]
             result[host][cfg['name']] = fact_value
@@ -150,7 +150,7 @@ config = [
     ]
 
 # Fact preparation
-facts_raw = load_fact_files(FACTDIR)
+facts_raw = load_host_facts(FACTDIR)
 facts = extract_facts(facts_raw, config)
 
 # Result output
