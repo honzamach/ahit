@@ -1,11 +1,5 @@
-#-------------------------------------------------------------------------------
-#
-# aHIT (Ansible Host Inspection Tool)
-#
-# Copyright (C) 2015 Jan Mach <honza.mach.ml@gmail.com>
-# Use of this source is governed by the MIT license, see LICENSE file.
-#-------------------------------------------------------------------------------
-
-AHIT_INVENTORY_FILE="/etc/ansible/hosts"
-AHIT_HOST_GROUP="all"
-AHIT_FACT_DIR="./host_facts"
+{
+    "inventory": "/etc/ansible/hosts",
+    "group": "all",
+    "fact_dir": "./host_facts"
+}

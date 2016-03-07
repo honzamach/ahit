@@ -1,0 +1,499 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+#-------------------------------------------------------------------------------
+#
+# aHIT (Ansible Host Inspection Tool)
+#
+# Copyright (C) 2015 Jan Mach <honza.mach.ml@gmail.com>
+# Use of this source is governed by the MIT license, see LICENSE file.
+#-------------------------------------------------------------------------------
+
+import os
+import sys
+import json
+import argparse
+import subprocess
+
+#
+# Global variables.
+#
+VERSION = "0.1.1"
+
+DFLT_TABLE_STYLE = 'utf8.b'
+
+DFLT_CONFIG_FILE = './ahit.conf'
+DFLT_INVENTORY = '/etc/ansible/hosts'
+DFLT_GROUP = 'all'
+DFLT_FACT_DIR = '/etc/ansible/host_facts'
+
+class TableViewWidget:
+    """
+    Table result formater.
+    """
+    def __init__(self, **kwargs):
+        """
+        Default object constructor.
+        """
+        # Formating for table header cells
+        self._header_format = { 'align': '^' }
+        self._header_style = { 'bold': True }
+        self._border_style = {}
+
+        # Index of terminal formating options
+        self._terminal_formatings = {
+            'ascii': {
+                'purple':     '',
+                'cyan':       '',
+                'darkcyan':   '',
+                'blue':       '',
+                'green':      '',
+                'yellow':     '',
+                'red':        '',
+                'bold':       '',
+                'underline':  '',
+                'end':        '',
+            },
+            'utf8.a': {
+                'purple':     '\033[95m',
+                'cyan':       '\033[96m',
+                'darkcyan':   '\033[36m',
+                'blue':       '\033[94m',
+                'green':      '\033[92m',
+                'yellow':     '\033[93m',
+                'red':        '\033[91m',
+                'bold':       '\033[1m',
+                'underline':  '\033[4m',
+                'end':        '\033[0m',
+            }
+        }
+        # Pick default terminal formating style
+        self._tfs = self._terminal_formatings.get('utf8.a')
+
+        # Index of box drawing characters (https://en.wikipedia.org/wiki/Box-drawing_character)
+        self._border_line_styles = {
+            'ascii': {
+                'h':  '-', 'v':  '|',
+                'th': '-', 'tv': '|', 'tl': '+', 'tm': '+', 'tr': '+',
+                'mh': '-', 'mv': '|', 'ml': '+', 'mm': '+', 'mr': '+',
+                'bh': '-', 'bv': '|', 'bl': '+', 'bm': '+', 'br': '+'
+            },
+            'utf8.a': {
+                # Alternativelly define the characters with unicode codes
+                #'h': '\u2500', 'v': '\u2502',
+                #'th': '\u2500', 'tv': '\u2502', 'tl': '\u250c', 'tm': '\u252c', 'tr': '\u2510',
+                #'mh': '\u2500', 'mv': '\u2502', 'ml': '\u251c', 'mm': '\u253c', 'mr': '\u2524',
+                #'bh': '\u2500', 'bv': '\u2502', 'bl': '\u2514', 'bm': '\u2534', 'br': '\u2518'
+                'h':  '─', 'v':  '│',
+                'th': '─', 'tv': '│', 'tl': '┌', 'tm': '┬', 'tr': '┐',
+                'mh': '─', 'mv': '│', 'ml': '├', 'mm': '┼', 'mr': '┤',
+                'bh': '─', 'bv': '│', 'bl': '└', 'bm': '┴', 'br': '┘'
+            },
+            'utf8.b': {
+                'h':  '─', 'v':  '│',
+                'th': '─', 'tv': '│', 'tl': '┌', 'tm': '┬', 'tr': '┐',
+                'mh': '═', 'mv': '│', 'ml': '╞', 'mm': '╪', 'mr': '╡',
+                'bh': '─', 'bv': '│', 'bl': '└', 'bm': '┴', 'br': '┘'
+            },
+        }
+        # Pick default border style
+        self._tbs = self._border_line_styles.get('utf8.b')
+
+        self.ascii = kwargs.pop('ascii', False)
+        if self.ascii:
+            self._tfs = self._terminal_formatings.get('ascii')
+            self._tbs = self._border_line_styles.get('ascii')
+
+    #---------------------------------------------------------------------------
+
+    def tfs(self, style = 'end'):
+        """
+        Retrieve terminal formating style code.
+        """
+        index = '' + style
+        index = index.lower()
+        return self._tfs[index]
+
+    def tbs(self, posh = 'v', posv = 'm'):
+        """
+        Retrieve table border style for particular box piece.
+        """
+        index = '' + posv + posh
+        index = index.lower()
+        return self.fmt(self._tbs[index], self._border_style)
+
+    def fmt(self, value, formating):
+        """
+        Apply given terminal formating around given value.
+        """
+        if not self.ascii:
+            i = 0
+            for f in formating:
+                if formating.get(f, False):
+                    i += 1
+                    value = self.tfs(f) + value + self.tfs('end')
+            if i > 0:
+                value = value + self.tfs('end')
+        return value
+
+    #---------------------------------------------------------------------------
+
+    def format_sep(self, dimensions, t = 'm'):
+        """
+        Format table row separator line.
+        """
+        cells = []
+        for column in dimensions:
+            cells.append(self.tbs('h', t) * (dimensions[column] + 2))
+        return self.tbs('l', t) + self.tbs('m', t).join(cells) + self.tbs('r', t)
+
+    def format_cell(self, value, width, cell_formating, **text_formating):
+        """
+        Format sigle table cell.
+        """
+        strptrn = " {:" + '{:s}{:d}'.format(cell_formating.get('align', '<'), width) + "s} "
+        strptrn = self.fmt(strptrn, text_formating)
+        return strptrn.format(value)
+
+    def format_row(self, columns, dimensions, row, header = False):
+        """
+        Format single table row
+        """
+        cells = []
+        i = 0
+        for column in columns:
+            if not header:
+                cells.append(self.format_cell(
+                            row[i],
+                            dimensions[i],
+                            column
+                        )
+                    )
+            else:
+                cells.append(self.format_cell(
+                            row[i],
+                            dimensions[i],
+                            self._header_format,
+                            **self._header_style
+                        )
+                    )
+            i += 1
+        return self.tbs('v') + self.tbs('v').join(cells) + self.tbs('v')
+
+    #---------------------------------------------------------------------------
+
+    def table_build(self, columns, facts):
+        """
+        Build result table from given facts and according to result table
+        configuration.
+        """
+        table = []
+
+        # Build table header
+        row = []
+        for col in columns:
+            row.append("{}".format(col['name']))
+        table.append(row)
+
+        # Build table body
+        for host in sorted(facts):
+            row = []
+            for col in columns:
+                row.append("{}".format(facts[host][col['name']]))
+            table.append(row)
+
+        return table
+
+    def table_measure(self, columns, table):
+        """
+        Measure the width of each table column.
+        """
+        dimensions = {}
+        for row in table:
+            i = 0
+            for cell in row:
+                # Calculate maximum from:
+                dimensions[i] = max(
+                        dimensions.get(i, 0),           # current column max value
+                        len(cell),                      # current cell value
+                        columns[i].get('width_min', 0)  # configured column minimal width
+                    )
+                i += 1
+        return dimensions
+
+    def table_display(self, columns, facts):
+        """
+        Display given facts in tabular format.
+        """
+        # Build the result table (list of lists).
+        table = self.table_build(columns, facts)
+        size = len(table)
+
+        # Calculate the dimensions of each table column.
+        dimensions = self.table_measure(columns, table)
+
+        # Display table header.
+        header = table.pop(0)
+        print(self.format_sep(dimensions, 't'))
+        print(self.format_row(columns, dimensions, header, True))
+        print(self.format_sep(dimensions, 'm'))
+
+        # Display table body.
+        for row in table:
+            print(self.format_row(columns, dimensions, row))
+
+        # Display table footer
+        print(self.format_sep(dimensions, 'b'))
+
+class AHITException(Exception):
+    """
+    Base class for all AHITScript specific exceptions.
+
+    These exceptions will be catched, error will be displayed to the user and
+    script will attempt to gracefully terminate without dumping the traceback
+    to the user. These exceptions should be used for anticipated errors, which
+    can occur during normal script execution and do not mean there is anything
+    wrong with the script itself, for example missing configuration file, etc...
+    """
+    def __init__(self, description):
+        self._description = description
+    def __str__(self):
+        return repr(self._description)
+
+class AHIT:
+    """
+    aHIT (Ansible Host Inspection Tool).
+    """
+    def __init__(self, **kwargs):
+        """
+        Default object constructor.
+        """
+        # [PUBLIC] Initialize configurations with default values. These values
+        # can come via constructor arguments and thus override the global constants.
+        self.config  = {
+            'config_file': kwargs.pop('config_file', DFLT_CONFIG_FILE),
+            'inventory':   kwargs.pop('inventory',   DFLT_INVENTORY),
+            'group':       kwargs.pop('group',       DFLT_GROUP),
+            'fact_dir':    kwargs.pop('fact_dir',    DFLT_FACT_DIR),
+
+            'ascii': False,
+            'refresh': False,
+        }
+
+        # Configuration of the format of the result table
+        self._cfg_table_overview = [
+                { 'name': 'Host',     'keys': ['ansible_facts', 'ansible_hostname'] },
+                { 'name': 'Distro',   'keys': ['ansible_facts', 'ansible_lsb', 'id'] },
+                { 'name': 'Release',  'keys': ['ansible_facts', 'ansible_lsb', 'release'] },
+                { 'name': 'Codename', 'keys': ['ansible_facts', 'ansible_lsb', 'codename'] },
+                { 'name': 'Arch',     'keys': ['ansible_facts', 'ansible_userspace_architecture'] },
+                { 'name': 'Kernel',   'keys': ['ansible_facts', 'ansible_kernel'] },
+                { 'name': 'Server',   'keys': ['ansible_facts', 'ansible_product_name'], 'replace': True },
+                { 'name': 'Serial',   'keys': ['ansible_facts', 'ansible_product_serial'], 'trim': 9 },
+                { 'name': 'RAM',      'keys': ['ansible_facts', 'ansible_memtotal_mb'], 'align': '>' },
+                { 'name': 'IPv4',     'keys': ['ansible_facts', 'ansible_default_ipv4', 'address'] },
+                { 'name': 'IPv6',     'keys': ['ansible_facts', 'ansible_default_ipv6', 'address'] }
+            ]
+
+        # [PRIVATE] Autodetect the name of the script
+        self._name  = os.path.basename(sys.argv[0])
+
+        # [PRIVATE] Default script help description
+        self._description = kwargs.pop('description', 'aHIT - Ansible Host Inspection Tool')
+
+    def __del__(self):
+        """
+        Default object destructor.
+        """
+        pass
+
+    #---------------------------------------------------------------------------
+
+    def json_load(self, jsonfile, **kwargs):
+        """
+        Load data structure from given json file.
+        """
+
+        if not os.path.isfile(jsonfile):
+            if 'default' in kwargs:
+                return kwargs['default']
+
+        jf = open(jsonfile, 'r')
+        data = json.load(jf)
+        jf.close()
+        return data
+
+    def fact_replace(self, fact):
+        """
+        Replace some particular fact values with different ones.
+        """
+        fact = fact.replace('VMware Virtual Platform', 'VMware Virtual')
+        return fact
+
+    def fact_extract(self, facts, cfg):
+        """
+        Extract single host fact.
+        """
+        fact_value = facts
+        for key in cfg['keys']:
+            if key in fact_value:
+                fact_value = fact_value[key]
+            else:
+                fact_value = '???'
+                break
+        if 'replace' in cfg and cfg['replace']:
+            fact_value = self.fact_replace(fact_value)
+        if 'trim' in cfg:
+            fact_value = fact_value[:cfg['trim']]
+        return fact_value
+
+    #---------------------------------------------------------------------------
+
+    def host_facts_refresh(self):
+        """
+        Refresh host fact cache.
+        """
+        command = "/usr/bin/ansible -i {} {} -m setup --tree {}".format(
+                        self.config.get('inventory'),
+                        self.config.get('group'),
+                        self.config.get('fact_dir')
+                    )
+        result = subprocess.call(command, shell=True)
+        return result
+
+    def host_fact_files(self):
+        """
+        Getlist of all currently present host fact files.
+        """
+        fact_files = []
+        fact_dir = self.config.get('fact_dir')
+        all_files = os.listdir(fact_dir)
+        for f in all_files:
+            fn = os.path.join(fact_dir, f)
+            if os.path.isfile(fn):
+                fact_files.append((f, fn))
+        return fact_files
+
+    def host_facts_load(self):
+        """
+        Load host facts from all files within given directory.
+        """
+        facts = {}
+        factfiles = self.host_fact_files()
+        for f in factfiles:
+            facts[f[0]] = self.json_load(f[1])
+        return facts
+
+    def host_facts_extract(self, facts):
+        """
+        Extract specific facts.
+        """
+        result = {}
+        for host in facts:
+            result[host] = {}
+            for cfg in self._cfg_table_overview:
+                result[host][cfg['name']] = self.fact_extract(facts[host], cfg)
+        return result
+
+    def host_facts_display(self, facts):
+        """
+        Display given host facts in tabular format.
+        """
+        table_view = TableViewWidget(
+                ascii = self.config.get('ascii')
+            )
+        table_view.table_display(self._cfg_table_overview, facts)
+
+    #---------------------------------------------------------------------------
+
+    def _configure(self):
+        """
+        Perform configuration by merging command line options with values from
+        configuration file.
+        """
+        # Setup command line parser.
+        argparser = argparse.ArgumentParser(description = self._description)
+        argparser.add_argument('--config-file', help = 'name of the config file')
+        argparser.add_argument('--inventory',   help = 'name of the inventory file')
+        argparser.add_argument('--group',       help = 'name of the Ansible host group')
+        argparser.add_argument('--fact-dir',    help = 'name of the fact cache directory')
+        argparser.add_argument('--ascii',       help = 'print only ASCII characters (flag)', action = 'store_true', default = None)
+        argparser.add_argument('--refresh',     help = 'force host fact refresh (flag)', action = 'store_true', default = None)
+
+        # Process command line arguments.
+        self._config_cli = vars(argparser.parse_args())
+
+        # IMPORTANT! Immediatelly rewrite the default value for configuration file
+        # name, if the new value was received as command line argument.
+        if not self._config_cli['config_file'] == None:
+            self.config['config_file'] = self._config_cli['config_file']
+
+        # Load configurations from external file.
+        self._config_file = self.json_load(self.config.get('config_file'))
+
+        # Merge all configurations together.
+        self.config.update((k, v) for k, v in self._config_file.items() if v is not None)
+        self.config.update((k, v) for k, v in self._config_cli.items()  if v is not None)
+
+    def _check(self):
+        """
+        Perform various pre-run sanity checks.
+        """
+        if not os.path.isfile(self.config.get('inventory')):
+            raise AHITException("Inventory file '{}' does not exist".format(self.config.get('inventory')))
+        if not os.path.isdir(self.config.get('fact_dir')):
+            raise AHITException("Host fact directory '{}' does not exist".format(self.config.get('fact_dir')))
+
+    def _setup(self):
+        """
+        Perform additional setup tasks.
+        """
+        # Detect the presence of any host fact files and enforce refresh, if necessary.
+        fact_files = self.host_fact_files()
+        if not len(fact_files):
+            self.config['refresh'] = True
+
+    def _process(self):
+        """
+        Perform actual processing.
+        """
+        # Refresh the host fact cache, if requested.
+        if self.config.get('refresh'):
+            self.host_facts_refresh()
+
+        # Load all available host facts.
+        facts_raw = self.host_facts_load()
+
+        # Extract desired subset of facts into one dimensional dictionary.
+        facts = self.host_facts_extract(facts_raw)
+
+        # Display the result to the user
+        self.host_facts_display(facts)
+
+    #---------------------------------------------------------------------------
+
+    def run(self):
+        """
+        Main processing method. Orchestrates the whole application logic.
+        """
+        try:
+            # Perform configuration.
+            self._configure()
+
+            # Perform sanity checks.
+            self._check()
+
+            # Perform additional setup tasks.
+            self._setup()
+
+            # Perform processing.
+            self._process()
+        except AHITException as exc:
+            print("Error: {}".format(exc), file=sys.stderr)
+            sys.exit(1)
+
+if __name__ == "__main__":
+    """
+    Instantinate the tool object and execute the processing.
+    """
+    tool = AHIT()
+    tool.run()
